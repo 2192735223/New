@@ -1,0 +1,431 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>手势祝福 - 高考加油</title>
+    <style>
+        * {
+            margin: 0;
+            padding: 0;
+            box-sizing: border-box;
+        }
+
+        body {
+            overflow: hidden;
+            font-family: 'Arial', sans-serif;
+            background: #000;
+        }
+
+        #video-container {
+            position: fixed;
+            top: 0;
+            left: 0;
+            width: 100vw;
+            height: 100vh;
+            z-index: 0;
+        }
+
+        #video {
+            width: 100%;
+            height: 100%;
+            object-fit: cover;
+            filter: brightness(0.4) contrast(1.1);
+            transform: scaleX(-1);
+        }
+
+        #canvas-container {
+            position: fixed;
+            top: 0;
+            left: 0;
+            width: 100vw;
+            height: 100vh;
+            z-index: 1;
+            pointer-events: none;
+        }
+
+        #status {
+            position: fixed;
+            bottom: 20px;
+            left: 50%;
+            transform: translateX(-50%);
+            color: white;
+            font-size: 16px;
+            z-index: 10;
+            background: rgba(0, 0, 0, 0.5);
+            padding: 10px 20px;
+            border-radius: 20px;
+            backdrop-filter: blur(10px);
+        }
+
+        #loading {
+            position: fixed;
+            top: 0;
+            left: 0;
+            width: 100vw;
+            height: 100vh;
+            background: #111;
+            display: flex;
+            flex-direction: column;
+            justify-content: center;
+            align-items: center;
+            z-index: 100;
+            color: white;
+            font-size: 24px;
+            text-align: center;
+            padding: 20px;
+        }
+
+        .loader {
+            width: 50px;
+            height: 50px;
+            border: 5px solid #333;
+            border-top: 5px solid #4CAF50;
+            border-radius: 50%;
+            animation: spin 1s linear infinite;
+            margin-bottom: 20px;
+        }
+
+        .error-message {
+            color: #ff6b6b;
+            font-size: 18px;
+            margin-top: 20px;
+            max-width: 80%;
+        }
+
+        .solution {
+            color: #4ecdc4;
+            font-size: 14px;
+            margin-top: 10px;
+            line-height: 1.5;
+        }
+
+        @keyframes spin {
+            0% { transform: rotate(0deg); }
+            100% { transform: rotate(360deg); }
+        }
+    </style>
+</head>
+<body>
+    <div id="loading">
+        <div class="loader"></div>
+        <div>正在加载模型和摄像头...</div>
+    </div>
+
+    <div id="video-container">
+        <video id="video" autoplay playsinline muted></video>
+    </div>
+
+    <div id="canvas-container"></div>
+
+    <div id="status">等待手势识别...</div>
+
+    <!-- 引入CDN资源 -->
+    <script src="https://cdn.jsdelivr.net/npm/three@0.160.0/build/three.min.js"></script>
+    <script src="https://cdn.jsdelivr.net/npm/@mediapipe/camera_utils@0.3/camera_utils.js"></script>
+    <script src="https://cdn.jsdelivr.net/npm/@mediapipe/hands@0.4/hands.js"></script>
+
+    <script>
+        // 全局变量
+        let scene, camera, renderer;
+        let particleSystems = [];
+        let currentText = '';
+        let hands;
+        let videoElement;
+        let statusElement;
+        let loadingElement;
+
+        // 手势对应的文字
+        const gestureTexts = {
+            'open_palm': '高考加油',
+            'victory': '欢迎报考',
+            'thumb_up': '山东理工大学'
+        };
+
+        // 初始化Three.js场景
+        function initThreeJS() {
+            scene = new THREE.Scene();
+            camera = new THREE.PerspectiveCamera(75, window.innerWidth / window.innerHeight, 0.1, 1000);
+            camera.position.z = 5;
+
+            renderer = new THREE.WebGLRenderer({ 
+                antialias: true, 
+                alpha: true 
+            });
+            renderer.setSize(window.innerWidth, window.innerHeight);
+            renderer.setPixelRatio(Math.min(window.devicePixelRatio, 2));
+            document.getElementById('canvas-container').appendChild(renderer.domElement);
+
+            const ambientLight = new THREE.AmbientLight(0xffffff, 0.6);
+            scene.add(ambientLight);
+
+            window.addEventListener('resize', onWindowResize);
+        }
+
+        function onWindowResize() {
+            camera.aspect = window.innerWidth / window.innerHeight;
+            camera.updateProjectionMatrix();
+            renderer.setSize(window.innerWidth, window.innerHeight);
+        }
+
+        // 创建粒子文字
+        function createParticleText(text, color = 0xff6b6b) {
+            clearParticleSystems();
+            currentText = text;
+
+            const canvas = document.createElement('canvas');
+            const context = canvas.getContext('2d');
+            canvas.width = 1024;
+            canvas.height = 256;
+
+            context.fillStyle = '#000';
+            context.fillRect(0, 0, canvas.width, canvas.height);
+            context.font = 'bold 120px Arial';
+            context.fillStyle = '#fff';
+            context.textAlign = 'center';
+            context.textBaseline = 'middle';
+            context.fillText(text, canvas.width / 2, canvas.height / 2);
+
+            const texture = new THREE.CanvasTexture(canvas);
+            const geometry = new THREE.BufferGeometry();
+            const positions = [];
+            const colors = [];
+            const originalPositions = [];
+
+            const imageData = context.getImageData(0, 0, canvas.width, canvas.height);
+            const data = imageData.data;
+            const particleCount = 4000;
+            const step = Math.floor((canvas.width * canvas.height) / particleCount);
+
+            for (let i = 0; i < canvas.width * canvas.height; i += step) {
+                if (data[i * 4] > 128) {
+                    const x = (i % canvas.width) / canvas.width * 8 - 4;
+                    const y = -(Math.floor(i / canvas.width) / canvas.height * 2 - 1);
+                    const z = (Math.random() - 0.5) * 0.5;
+
+                    positions.push(x, y, z);
+                    originalPositions.push(x, y, z);
+
+                    const r = ((color >> 16) & 255) / 255 + (Math.random() - 0.5) * 0.2;
+                    const g = ((color >> 8) & 255) / 255 + (Math.random() - 0.5) * 0.2;
+                    const b = (color & 255) / 255 + (Math.random() - 0.5) * 0.2;
+
+                    colors.push(r, g, b);
+                }
+            }
+
+            geometry.setAttribute('position', new THREE.Float32BufferAttribute(positions, 3));
+            geometry.setAttribute('color', new THREE.Float32BufferAttribute(colors, 3));
+            geometry.setAttribute('originalPosition', new THREE.Float32BufferAttribute(originalPositions, 3));
+
+            const material = new THREE.PointsMaterial({
+                size: 0.06,
+                vertexColors: true,
+                transparent: true,
+                opacity: 0.9,
+                blending: THREE.AdditiveBlending
+            });
+
+            const particleSystem = new THREE.Points(geometry, material);
+            scene.add(particleSystem);
+            particleSystems.push(particleSystem);
+        }
+
+        // 粒子动画
+        function animateParticles(particleSystem) {
+            const positions = particleSystem.geometry.attributes.position.array;
+            const originalPositions = particleSystem.geometry.attributes.originalPosition.array;
+            const time = Date.now() * 0.001;
+
+            for (let i = 0; i < positions.length; i += 3) {
+                positions[i] = originalPositions[i] + Math.sin(time + i * 0.01) * 0.02;
+                positions[i + 1] = originalPositions[i + 1] + Math.cos(time + i * 0.01) * 0.02;
+            }
+
+            particleSystem.geometry.attributes.position.needsUpdate = true;
+            particleSystem.rotation.y = Math.sin(Date.now() * 0.0005) * 0.1;
+        }
+
+        function clearParticleSystems() {
+            particleSystems.forEach(system => {
+                scene.remove(system);
+                system.geometry.dispose();
+                system.material.dispose();
+            });
+            particleSystems = [];
+            currentText = '';
+        }
+
+        // 初始化MediaPipe手势识别
+        async function initMediaPipe() {
+            videoElement = document.getElementById('video');
+            statusElement = document.getElementById('status');
+            loadingElement = document.getElementById('loading');
+
+            // 先检查是否是本地文件协议
+            if (window.location.protocol === 'file:') {
+                showError(
+                    '无法在本地文件中访问摄像头',
+                    '请通过HTTP/HTTPS协议访问此页面。\n建议上传到GitHub Pages或使用本地服务器。'
+                );
+                return;
+            }
+
+            try {
+                // 先请求摄像头权限
+                const stream = await navigator.mediaDevices.getUserMedia({ 
+                    video: { facingMode: 'user' } 
+                });
+                videoElement.srcObject = stream;
+
+                hands = new Hands({
+                    locateFile: (file) => {
+                        return `https://cdn.jsdelivr.net/npm/@mediapipe/hands@0.4/${file}`;
+                    }
+                });
+
+                hands.setOptions({
+                    maxNumHands: 1,
+                    modelComplexity: 0, // 使用轻量模型提高手机性能
+                    minDetectionConfidence: 0.7,
+                    minTrackingConfidence: 0.5
+                });
+
+                hands.onResults(onHandResults);
+
+                const camera = new Camera(videoElement, {
+                    onFrame: async () => {
+                        await hands.send({ image: videoElement });
+                    },
+                    width: 640,
+                    height: 480
+                });
+
+                await camera.start();
+                loadingElement.style.display = 'none';
+
+            } catch (error) {
+                if (error.name === 'NotAllowedError') {
+                    showError(
+                        '摄像头权限被拒绝',
+                        '请在浏览器设置中允许此页面访问摄像头，然后刷新页面。'
+                    );
+                } else if (error.name === 'NotFoundError') {
+                    showError(
+                        '未找到摄像头设备',
+                        '请确保您的设备有可用的摄像头，并且没有被其他应用占用。'
+                    );
+                } else {
+                    showError(
+                        '摄像头初始化失败',
+                        `错误信息: ${error.message}\n请刷新页面重试。`
+                    );
+                }
+            }
+        }
+
+        function showError(title, solution) {
+            loadingElement.innerHTML = `
+                <div style="color: #ff6b6b; font-size: 24px; margin-bottom: 20px;">❌ ${title}</div>
+                <div class="solution">${solution.replace(/\n/g, '<br>')}</div>
+            `;
+        }
+
+        // 处理手势识别结果
+        function onHandResults(results) {
+            if (results.multiHandLandmarks && results.multiHandLandmarks.length > 0) {
+                const landmarks = results.multiHandLandmarks[0];
+                const gesture = detectGesture(landmarks);
+
+                if (gesture) {
+                    statusElement.textContent = `识别到: ${getGestureName(gesture)}`;
+                    
+                    if (gestureTexts[gesture] && currentText !== gestureTexts[gesture]) {
+                        createParticleText(gestureTexts[gesture], getGestureColor(gesture));
+                    }
+                } else {
+                    statusElement.textContent = '未识别到特定手势';
+                }
+            } else {
+                statusElement.textContent = '等待手势识别...';
+                clearParticleSystems();
+            }
+        }
+
+        // 检测手势（优化版，更准确）
+        function detectGesture(landmarks) {
+            const thumbTip = landmarks[4];
+            const indexTip = landmarks[8];
+            const middleTip = landmarks[12];
+            const ringTip = landmarks[16];
+            const pinkyTip = landmarks[20];
+
+            const thumbIP = landmarks[3];
+            const indexPIP = landmarks[6];
+            const middlePIP = landmarks[10];
+            const ringPIP = landmarks[14];
+            const pinkyPIP = landmarks[18];
+
+            const wrist = landmarks[0];
+
+            // 计算手指是否伸直（y坐标越小越靠上）
+            const isThumbUp = thumbTip.y < thumbIP.y && thumbTip.y < wrist.y;
+            const isIndexUp = indexTip.y < indexPIP.y;
+            const isMiddleUp = middleTip.y < middlePIP.y;
+            const isRingUp = ringTip.y < ringPIP.y;
+            const isPinkyUp = pinkyTip.y < pinkyPIP.y;
+
+            // 张开手掌：所有手指都伸直
+            if (isThumbUp && isIndexUp && isMiddleUp && isRingUp && isPinkyUp) {
+                return 'open_palm';
+            }
+
+            // 比耶：食指和中指伸直，其他弯曲
+            if (isIndexUp && isMiddleUp && !isRingUp && !isPinkyUp) {
+                return 'victory';
+            }
+
+            // 大拇指：只有大拇指伸直，其他弯曲
+            if (isThumbUp && !isIndexUp && !isMiddleUp && !isRingUp && !isPinkyUp) {
+                return 'thumb_up';
+            }
+
+            return null;
+        }
+
+        function getGestureName(gesture) {
+            const names = {
+                'open_palm': '张开手掌',
+                'victory': '比耶',
+                'thumb_up': '大拇指'
+            };
+            return names[gesture] || gesture;
+        }
+
+        function getGestureColor(gesture) {
+            const colors = {
+                'open_palm': 0xff6b6b,    // 红色-高考加油
+                'victory': 0x4ecdc4,      // 青色-欢迎报考
+                'thumb_up': 0xffd93d      // 黄色-山东理工大学
+            };
+            return colors[gesture] || 0xffffff;
+        }
+
+        // 动画循环
+        function animate() {
+            requestAnimationFrame(animate);
+            particleSystems.forEach(animateParticles);
+            renderer.render(scene, camera);
+        }
+
+        // 初始化应用
+        async function init() {
+            initThreeJS();
+            await initMediaPipe();
+            animate();
+        }
+
+        window.addEventListener('DOMContentLoaded', init);
+    </script>
+</body>
+</html>
